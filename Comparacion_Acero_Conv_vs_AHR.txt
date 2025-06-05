@@ -1,0 +1,139 @@
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ======== PARÁMETROS ========
+fy_conv = 4200
+fy_ahr = 7000
+Es = 2.1e6
+fc = 250
+lw = 30
+N_imp = 120000
+n_fibras = 500
+
+xj_steel = np.array([5, 17.5, 30, 42.5, 55])
+n_1 = np.array([3, 2, 2, 2, 3])
+diam_1 = np.array([22, 22, 22, 22, 22])
+As = (np.pi / 4) * ((diam_1 / 10)**2) * n_1
+
+x_inicio = np.array([0.0])
+x_fin = np.array([30.0])
+bj = np.array([60.0])
+largo = x_fin - x_inicio
+xj_conc = x_inicio + largo / 2
+Aj = largo * bj
+bloques = [{
+    "x_inicio": x_inicio[i],
+    "x_fin": x_fin[i],
+    "xj [cm]": xj_conc[i],
+    "b [cm]": bj[i],
+    "largo [cm]": largo[i],
+    "Aj [cm²]": Aj[i]
+} for i in range(len(x_inicio))]
+
+Ag = np.sum(Aj)
+Ast = np.sum(As)
+fcAjxj = np.sum([b["Aj [cm²]"] * b["xj [cm]"] * 0.85 * fc for b in bloques])
+Asfyxj = np.sum(As * xj_steel * fy_conv)
+denom = 0.85 * fc * Ag + Ast * fy_conv
+xp = (fcAjxj + Asfyxj) / denom
+
+def sigma_hormigon_postfalla(ec, fc, eo=0.002, ecu=0.003, ec_max=0.008):
+    if ec <= 0:
+        return 0
+    elif ec <= eo:
+        return fc * (2 * ec / eo - (ec / eo)**2)
+    elif ec <= ecu:
+        return fc
+    elif ec <= ec_max:
+        return fc * (1 - 0.8 * (ec - ecu) / (ec_max - ecu))
+    else:
+        return 0
+
+def sigma_acero_tipo(es, Es, fy, ey=None, εu=0.05, tipo="convencional"):
+    if ey is None:
+        ey = fy / Es
+    if abs(es) <= ey:
+        return Es * es
+    elif abs(es) <= εu:
+        return fy * np.sign(es)
+    elif tipo == "ahr":
+        return fy * np.sign(es)
+    else:
+        return 0
+
+def calcular_Tj(xj_steel, As, phi, c, fy, tipo):
+    return np.array([
+        Asj * sigma_acero_tipo(phi * (xj - c), Es, fy, tipo=tipo)
+        for xj, Asj in zip(xj_steel, As)
+    ])
+
+def calcular_Cj(bloques, phi, c, xp, n_fibras):
+    dx = lw / n_fibras
+    Cj, Mj = [], []
+    for i in range(n_fibras):
+        xj = dx * (i + 0.5)
+        bloque = bloques[0]
+        Aj_fibra = bloque["b [cm]"] * dx
+        eci = -phi * (xj - c)
+        fc_i = sigma_hormigon_postfalla(eci, fc)
+        C = Aj_fibra * fc_i
+        M = C * (xp - xj)
+        Cj.append(C)
+        Mj.append(M)
+    return np.array(Cj), np.array(Mj)
+
+def encontrar_c(ec, bloques, xj_steel, As, fy, tipo, lw, N_imp, xp, n_fibras, tol=1e-3, max_iter=200):
+    c_min, c_max = 0.1, lw
+    mejor_phi = None
+    mejor_M = None
+    min_error = float("inf")
+    for _ in range(max_iter):
+        c = (c_min + c_max) / 2
+        phi = ec / c
+        Tj = calcular_Tj(xj_steel, As, phi, c, fy, tipo)
+        Cj, _ = calcular_Cj(bloques, phi, c, xp, n_fibras)
+        equilibrio = np.sum(Cj) - np.sum(Tj)
+        error = abs(equilibrio - N_imp)
+        if error < min_error:
+            mejor_phi = phi
+            dx = lw / n_fibras
+            xj_fibra = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+            Mj_T = -Tj * (xp - xj_steel)
+            Mj_C = Cj * (xp - xj_fibra)
+            mejor_M = np.sum(Mj_T) + np.sum(Mj_C)
+            min_error = error
+        if error < tol:
+            break
+        if equilibrio < N_imp:
+            c_min = c
+        else:
+            c_max = c
+    return mejor_phi, mejor_M
+
+def modelo_acero(ec_list, fy, tipo):
+    resultados = []
+    for ec in ec_list:
+        try:
+            phi, M = encontrar_c(ec, bloques, xj_steel, As, fy, tipo, lw, N_imp, xp, n_fibras)
+            resultados.append((ec, phi, M))
+        except:
+            resultados.append((ec, None, None))
+    return pd.DataFrame(resultados, columns=["εc", "Curvatura φ", f"Momento M [{tipo}]"])
+
+# Curvaturas hasta 0.05
+ec_list = np.linspace(0.0001, 0.05, 150)
+df_conv = modelo_acero(ec_list, fy_conv, "convencional").dropna()
+df_ahr = modelo_acero(ec_list, fy_ahr, "ahr").dropna()
+
+plt.figure(figsize=(9, 5))
+plt.plot(df_conv["Curvatura φ"], df_conv["Momento M [convencional]"], label="Acero Convencional", linestyle='--', marker='o')
+plt.plot(df_ahr["Curvatura φ"], df_ahr["Momento M [ahr]"], label="Acero Alta Resistencia", linestyle='-', marker='s')
+plt.xlabel("Curvatura φ [1/cm]")
+plt.ylabel("Momento M [kgf·cm]")
+plt.title("Curva M–φ con Carga Axial de 120000 kgf")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
