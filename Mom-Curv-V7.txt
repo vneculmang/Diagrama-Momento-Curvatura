@@ -1,0 +1,198 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# === PARAMETROS ===
+fy = 4200        # kgf/cm² fluencia del acero
+fu = 6300         # kgf/cm² resistencia ultima del acero
+Es = 2.1e6       # kgf/cm² modulo de elasticidad del acero
+fc = 250         # kgf/cm² Resistencia del hormigón
+lw = 30          # cm (longitud del muro en análisis)
+N_imp = 120000     # Carga axial (compresión positiva)
+n_fibras =300   # fibras de concreto para integración
+
+#deformaciones acero
+eps_y = fy / Es       # deformación de fluencia del acero
+eps_sh = 0.01         # inicio del endurecimiento
+eps_su = 0.06         # deformación máxima del acero (fractura)
+
+#deformaciones hormigón
+eps_0 = 0.002         # deformación a f'c
+eps_cu = 0.003        # deformación última del hormigón
+
+# Geometría y acero
+xj_steel = np.array([5, 17.5, 30, 42.5, 55])    # posición barras
+n_1 = np.array([3,2,2,2,3])             # Cantidad de barras por línea de refuerzo
+diam_1 = np.array([22, 22, 22, 22,22])          # mm Diámetros de las barras por línea
+As = (np.pi / 4) * ((diam_1 / 10)**2) * n_1      # cm² Área de acero total por línea de refuerzo
+
+# Concreto: bloques y área total
+x_inicio = np.array([0.0]) #Inicio del bloque de concreto (eje horizontal)
+x_fin = np.array([30.0]) #Fin del bloque de concreto (eje horizontal) [cm]
+bj = np.array([60.0]) #Ancho del bloque de concreto [cm]
+largo = x_fin - x_inicio #Largo del bloque de concreto [cm]
+xj_conc = x_inicio + largo / 2  #Centroide de cada bloque de concreto [cm]
+Aj = largo * bj #Área de cada bloque de concreto [cm²]
+
+#Lista de diccionarios con la geometría de cada bloque PARA MUROS T
+bloques = [{
+    "x_inicio": x_inicio[i],
+    "x_fin": x_fin[i],
+    "xj [cm]": xj_conc[i],
+    "b [cm]": bj[i],
+    "largo [cm]": largo[i],
+    "Aj [cm²]": Aj[i]
+} for i in range(len(x_inicio))]
+
+# Centroide (xp)
+Ast = np.sum(As) #Área total de acero longitudinal
+fcAjxj = np.sum([b["Aj [cm²]"] * b["xj [cm]"] * 0.85 * fc for b in bloques]) #Momento de bloques de hormigon respecto a eje neutro
+Asfyxj = np.sum(As * xj_steel * fy) #Momento del acero respecto a eje neutro
+Ag = np.sum(Aj) #Área bruta
+denom = 0.85 * fc * Ag + Ast * fy #Denominador del cálculo del centroide combinado
+xp = (fcAjxj + Asfyxj) / denom #Centroide combinado acero + hormigon [cm]
+
+# === FUNCIONES DE MATERIALES ===
+
+# Modelo de acero con endurecimiento (basado en SAP2000)
+def sigma_acero(es, fy=fy, fu=fu, Es=Es, eps_sh=eps_sh, eps_su=eps_su):
+
+    #es: deformación unitaria por tracción en el acero (positiva en tracción)
+    # eps_y = deformación de fluencia [fy/Es]
+    # eps_sh = deformación al inicio del endurecimiento [0.01 - 0.015]
+    # eps_su = deformación última del acero (fractura) [0.05 - 0.12]
+
+    eps_y = fy / Es  # Se calcula dentro de la función en base a los valores entregados
+    abs_es = abs(es)
+
+    if abs_es <= eps_y:
+        return Es * es  #elástico
+    elif abs_es <= eps_sh:
+        return fy * np.sign(es)  # perfectamente plástico
+    elif abs_es <= eps_su:
+        ratio = (abs_es - eps_sh) / (eps_su - eps_sh)
+        return (fy + (fu - fy) * np.sqrt(ratio)) * np.sign(es)  #endurecimiento
+    else:
+        return 0  #fractura
+
+# Modelo para hormigón (Kent y Park simplificado)
+def sigma_hormigon(ec, fc=fc, eps_0=eps_0, eps_cu=eps_cu):
+
+    # ec = deformación unitaria del hormigón (positiva en compresión)
+    # eps_0 = deformación en la que se alcanza fc [0.002]
+    # eps_cu = deformación última del hormigón [0.003]
+
+    if ec <= 0:
+        return 0 #tracción nula
+    elif ec <= eps_0:
+        return fc * (2 * ec / eps_0 - (ec / eps_0)**2) #tramo parabolico hasta el esfuerzo máximo
+    elif ec <= eps_cu:
+        return fc #constante hasta la deformación ultima
+    else:
+        return 0 #fractura
+
+# === INTEGRACIÓN DE FIBRAS ===
+#Fuerzas internas de tracción por hormigon
+
+def calcular_Cj(bloques, phi, c, xp, n_fibras, fc=fc, eps_cu=eps_cu):
+    dx = lw / n_fibras  #tamaño de cada fibra horizontal
+    Cj = []
+    Mj = []
+    for i in range(n_fibras):
+        xj = dx * (i + 0.5)
+        bloque = bloques[0]
+        Aj_fibra = bloque["b [cm]"] * dx
+        ec_i = -phi * (xj - c)
+        fc_i = sigma_hormigon(ec_i, fc, eps_0=0.002, eps_cu=eps_cu)
+        C = Aj_fibra * fc_i
+        M = C * (xp - xj) #momento con respecto al eje neutro
+        Cj.append(C)
+        Mj.append(M)
+    return np.array(Cj), np.array(Mj)
+
+# === MODELO DE CORTE ===
+
+def modelo_corte(
+    ec_list, fy, Es,
+    eps_s_max=0.08,
+    eps_cu=0.003,
+    corte_momento=True,
+    tolerancia_momento=0.0003
+):
+    #eps_s_max = deformación maxima en el acero
+    #eps_cu = deofrmacion maxima en el hormigón
+    #corte_momento = si el momento disminuye mucho corta la curva
+    #tolerancia_momento = reduce con respecto al máximo
+    resultados = []
+    M_max = 0 #momento maximo para almacenar
+
+    #se itera sobre las deformaciones del hormigon
+    for ec in ec_list:
+        try:
+            c_min = 0.1 #cota interior
+            c_max = lw #cota superior
+            mejor_phi = None #curvatura para ec i
+            mejor_M = None #momento para ec i
+            min_error = float("inf")
+            for _ in range(200): #metodo biseccion eje neutro
+                c = (c_min + c_max) / 2
+                phi = ec / c
+
+                #fuerza interna acero
+                Tj = np.array([
+                    Asj * sigma_acero(phi * (xj - c), fy=fy, Es=Es)
+                    for xj, Asj in zip(xj_steel, As)
+                ])
+
+                #fuerza interna hormigon
+                Cj, _ = calcular_Cj(bloques, phi, c, xp, n_fibras)
+
+                equilibrio = np.sum(Cj) - np.sum(Tj)
+                error = abs(equilibrio - N_imp)
+                #encuentra la  mejor curvatura
+                if error < min_error:
+                    mejor_phi = phi
+                    dx = lw / n_fibras
+                    xj_fibra = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+                    Mj_T = -Tj * (xp - xj_steel)
+                    Mj_C = Cj * (xp - xj_fibra)
+                    mejor_M = np.sum(Mj_T) + np.sum(Mj_C)
+                    min_error = error
+                if error < 1e-3:
+                    break
+                if equilibrio < N_imp:
+                    c_min = c
+                else:
+                    c_max = c
+            #corte del grafico
+            eps_s = [phi * (xj - c) for xj in xj_steel] #deformacion de las barras
+            if any(abs(eps) >= eps_s_max for eps in eps_s):
+                break #si alguna barra supera la deformacion utlima se corta
+            ec_max = max([-phi * (xj - c) for xj in np.linspace(0, lw, n_fibras)])
+            if ec_max >= eps_cu:
+                break #si el hormigon supera deformacion ultima se corta
+            if corte_momento:
+                if mejor_M < (1 - tolerancia_momento) * M_max:
+                    break #verifica perdida de momento
+                M_max = max(M_max, mejor_M)
+            resultados.append((ec, mejor_phi, mejor_M))
+        except:
+            break #si falla algo
+    return pd.DataFrame(resultados, columns=["ec", "Curvatura_phi", "Momento_M"])
+
+# === GRÁFICO ===
+ec_list = np.linspace(0.0001, 0.05, 300)
+df = modelo_corte(ec_list, fy, Es)
+
+plt.figure(figsize=(9, 5))
+plt.plot(df["Curvatura_phi"], df["Momento_M"], label="Curva", color="blue", marker='o')
+x_pos = df["Curvatura_phi"].max() * 0.1
+y_pos = df['Momento_M'].max() * 0.9
+plt.text(x_pos, y_pos, f"Carga axial: {N_imp/1000:.0f} toneladas", fontsize=10, color='gray')
+plt.xlabel("Curvatura φ [1/cm]")
+plt.ylabel("Momento M [kgf·cm]")
+plt.title("Curva M–φ")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
