@@ -1,0 +1,75 @@
+# --- DATOS 1: SAP IDEALIZADO MODELO DE FIBRAS (de v8.txt) ---
+curvatura_fibras = [
+    0, 4.20E-07, 1.05E-06, 1.89E-06, 2.94E-06, 4.20E-06, 5.67E-06, 7.34E-06,
+    9.23E-06, 1.13E-05, 1.36E-05, 1.62E-05, 1.89E-05, 2.18E-05, 2.50E-05,
+    2.83E-05, 3.19E-05, 3.57E-05, 3.97E-05, 4.39E-05, 4.83E-05, 5.29E-05,
+    5.77E-05, 6.27E-05, 6.80E-05, 7.34E-05, 7.91E-05, 8.50E-05, 9.11E-05,
+    9.74E-05, 1.04E-04, 1.11E-04, 1.18E-04, 1.25E-04, 1.32E-04, 1.40E-04,
+    0.0001473, 0.0001553, 0.0001634, 0.0001718, 0.0001804, 0.0001893,
+    0.0001983, 0.0002075, 0.0002169, 0.0002266, 0.0002365, 0.0002465,
+    0.0002568, 0.0002673
+]
+momento_fibras = [
+    1.05E-09, 8.95E+05, 2.24E+06, 3.77E+06, 4.70E+06, 5.81E+06, 7.11E+06,
+    8.14E+06, 9.29E+06, 1.06E+07, 1.20E+07, 1.35E+07, 1.52E+07, 1.70E+07,
+    1.89E+07, 2.09E+07, 2.31E+07, 2.40E+07, 2.48E+07, 2.52E+07, 2.57E+07,
+    2.61E+07, 2.63E+07, 2.67E+07, 2.69E+07, 2.70E+07, 2.72E+07, 2.74E+07,
+    2.75E+07, 2.77E+07, 2.78E+07, 2.79E+07, 2.80E+07, 2.80E+07, 2.81E+07,
+    2.83E+07, 2.85E+07, 2.87E+07, 2.89E+07, 2.90E+07, 2.92E+07, 2.93E+07,
+    2.95E+07, 2.97E+07, 2.98E+07, 3.00E+07, 3.02E+07, 3.04E+07, 3.06E+07,
+    3.08E+07
+]
+
+# --- DATOS 2: SAP IDEALIZADO INTEGRACION EXACTA (de v8.txt) ---
+curvatura_exacta = [
+    4.55E-13, 3.64E-07, 9.10E-07, 1.64E-06, 2.55E-06, 3.64E-06, 4.92E-06,
+    6.37E-06, 8.01E-06, 9.83E-06, 1.18E-05, 1.40E-05, 1.64E-05, 1.89E-05,
+    2.17E-05, 2.46E-05, 2.77E-05, 3.09E-05, 3.44E-05, 3.80E-05, 4.19E-05,
+    4.59E-05, 5.01E-05, 5.44E-05, 5.90E-05, 6.37E-05, 6.86E-05, 7.37E-05,
+    7.90E-05, 8.45E-05, 9.01E-05, 9.59E-05, 1.02E-04, 1.08E-04, 1.15E-04,
+    1.21E-04, 0.0001278, 0.0001347, 0.0001418, 0.0001491, 0.0001565,
+    0.0001642, 0.000172, 0.00018, 0.0001882, 0.0001966, 0.0002051,
+    0.0002139, 0.0002228, 0.0002319
+]
+momento_exacta = [
+    4.55E-13, 8.57E+05, 2.14E+06, 3.61E+06, 4.73E+06, 5.75E+06, 6.78E+06,
+    7.87E+06, 9.05E+06, 1.03E+07, 1.17E+07, 1.32E+07, 1.48E+07, 1.64E+07,
+    1.82E+07, 2.01E+07, 2.21E+07, 2.42E+07, 2.58E+07, 2.66E+07, 2.73E+07,
+    2.79E+07, 2.84E+07, 2.88E+07, 2.91E+07, 2.95E+07, 2.98E+07, 3.00E+07,
+    3.02E+07, 3.04E+07, 3.06E+07, 3.08E+07, 3.09E+07, 3.10E+07, 3.11E+07,
+    3.12E+07, 3.13E+07, 3.14E+07, 3.15E+07, 3.17E+07, 3.19E+07, 3.21E+07,
+    3.23E+07, 3.24E+07, 3.25E+07, 3.26E+07, 3.27E+07, 3.28E+07, 3.28E+07,
+    3.25E+07
+]
+
+# Crear la figura
+plt.figure(figsize=(12, 7))
+
+# Graficar la primera curva (Modelo de Fibras)
+plt.plot(curvatura_fibras, momento_fibras, label="SAP - Modelo de Fibras", color="blue", marker='o', markersize=3, linestyle='-')
+
+# Graficar la segunda curva (Integración Exacta)
+plt.plot(curvatura_exacta, momento_exacta, label="SAP - Integración Exacta", color="red", marker='x', markersize=4, linestyle='--')
+
+# Graficar la tercera curva (Tu modelo calculado)
+plt.plot(df["Curvatura_phi"], df["Momento_M"], label="Python Calculado", color="green", linewidth=2.5, linestyle=':')
+
+# Configurar la gráfica (títulos, etiquetas, etc.)
+plt.xlabel("Curvatura φ [1/cm]")
+plt.ylabel("Momento M [kgf·cm]")
+plt.title("Comparación de Curvas Momento-Curvatura (M–φ) - Datos v8")
+plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+# Añadir el texto con la carga axial en una posición fija (esquina inferior derecha)
+plt.text(0.6, 0.15, f"Carga axial (Mi Modelo): {N_imp/1000:.0f} toneladas",
+         fontsize=10, color='gray', transform=plt.gca().transAxes)
+
+plt.legend() # Muestra la leyenda con las tres etiquetas
+plt.tight_layout()
+
+# Formatear los ejes para que usen notación científica
+plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+
+# Mostrar la gráfica
+plt.show()
