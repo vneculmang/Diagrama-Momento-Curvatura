@@ -1,0 +1,95 @@
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+# === PARÁMETROS MATERIALES ===
+fy = 4200         # kgf/cm²
+fu = 6300         # kgf/cm²
+Es = 2.1e6        # kgf/cm²
+fc = 250          # kgf/cm²
+eps_sh = 0.01
+eps_su = 0.06
+eps_0 = 0.002
+eps_cu = 0.003
+
+# === GEOMETRÍA DE LA SECCIÓN ===
+h = 60  # cm altura
+b = 60  # cm ancho
+xp = 30  # cm, centroide
+
+# === ACERO ===
+xj_steel = np.array([5, 17.5, 30, 42.5, 55])  # cm
+n_barras = np.array([3, 2, 2, 2, 3])
+diam = np.array([22, 22, 22, 22, 22])  # mm
+As = (np.pi / 4) * (diam / 10)**2 * n_barras  # cm²
+
+# === HORMIGÓN ===
+n_fibras = 200
+dx = h / n_fibras
+xj_fibra = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+Aj = dx * b  # área por fibra
+
+# === MODELOS DE MATERIAL ===
+def sigma_acero(eps):
+    eps_y = fy / Es
+    if abs(eps) <= eps_y:
+        return Es * eps
+    elif abs(eps) <= eps_sh:
+        return fy * np.sign(eps)
+    elif abs(eps) <= eps_su:
+        return (fy + (abs(eps) - eps_sh) / (eps_su - eps_sh) * (fu - fy)) * np.sign(eps)
+    else:
+        return 0
+
+def sigma_hormigon(eps):
+    if eps >= 0:
+        return 0
+    if eps >= -eps_0:
+        return fc * (2 * eps / -eps_0 - (eps / -eps_0)**2)
+    elif eps >= -eps_cu:
+        return fc * (1 - 0.15 * (abs(eps) - eps_0) / (eps_cu - eps_0))
+    else:
+        return 0
+
+# === PARÁMETROS DE CARGA ===
+N_imp = 120000  # kgf (positivo en compresión)
+ec_range = np.linspace(0.0001, 0.0035, 200)
+
+resultados = []
+
+# === CÁLCULO PASO A PASO ===
+for eps_c in ec_range:
+    c_min, c_max = 5, h - 5
+    for _ in range(100):
+        c = (c_min + c_max) / 2
+        phi = eps_c / c
+
+        eps_s = phi * (xj_steel - c)
+        Tj = np.array([Asi * sigma_acero(eps) for eps, Asi in zip(eps_s, As)])
+
+        eps_f = phi * (xj_fibra - c)
+        Cj = np.array([sigma_hormigon(eps) * Aj for eps in eps_f])
+
+        equilibrio = np.sum(Tj) - np.sum(Cj)
+        if abs(equilibrio - N_imp) < 1e-2:
+            break
+        if equilibrio < N_imp:
+            c_min = c
+        else:
+            c_max = c
+
+    brazo_T = xj_steel - xp
+    brazo_C = xj_fibra - xp
+    M_total = np.sum(Tj * brazo_T) - np.sum(Cj * brazo_C)
+    resultados.append((phi, M_total))
+
+# === GRAFICAR RESULTADO ===
+res = np.array(resultados)
+plt.figure(figsize=(10, 6))
+plt.plot(res[:, 0] * 100, res[:, 1] / 1e5, color="navy", linewidth=2)
+plt.xlabel("Curvatura φ [1/m]")
+plt.ylabel("Momento M [ton·m]")
+plt.title("Curva Momento–Curvatura basada en lógica de la ayudantía")
+plt.grid(True, linestyle="--", alpha=0.6)
+plt.tight_layout()
+plt.show()
