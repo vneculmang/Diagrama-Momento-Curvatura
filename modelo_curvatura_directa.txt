@@ -1,0 +1,50 @@
+
+def modelo_curvatura_directa(phi_list, fy, Es, As, xj_steel, bloques, xp, N_imp,
+                              h, n_fibras, eps_su, eps_cu, tol=1e-2, max_iteraciones=100):
+    resultados = []
+
+    for phi in phi_list:
+        c_min = 5  # límite físico inferior del eje neutro
+        c_max = 55  # límite físico superior (60 cm muro)
+
+        convergido = False
+        for _ in range(max_iteraciones):
+            c = (c_min + c_max) / 2
+
+            # Deformaciones acero
+            eps_s = [phi * (xj - c) for xj in xj_steel]
+            Tj = np.array([Asj * sigma_acero(eps) for eps, Asj in zip(eps_s, As)])
+
+            # Hormigón
+            Cj, eps_fibra = calcular_Cj(bloques, phi, c, xp, n_fibras)
+
+            # Criterios de falla
+            if np.mean(np.array(eps_fibra) < -eps_cu) >= 0.3:
+                break
+            if all(abs(eps) >= eps_su for eps in eps_s):
+                break
+
+            equilibrio = np.sum(Cj) - np.sum(Tj)
+            error = abs(equilibrio - N_imp)
+
+            if error < tol:
+                convergido = True
+                break
+
+            if equilibrio < N_imp:
+                c_min = c
+            else:
+                c_max = c
+
+        if convergido:
+            dx = h / n_fibras
+            xj_fibra = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+            M_T = Tj * (xj_steel - xp)
+            M_C = Cj * (xj_fibra - xp)
+            M_total = np.sum(M_T) + np.sum(M_C)
+
+            if M_total >= 0:
+                resultados.append((phi, M_total, c, *eps_s))
+
+    columns = ["Curvatura_phi", "Momento_M", "c"] + [f"eps_s_{i+1}" for i in range(len(xj_steel))]
+    return pd.DataFrame(resultados, columns=columns)
