@@ -1,0 +1,295 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# === PARAMETROS ===
+fy = 4200        # kgf/cm² fluencia del acero
+fu = 6300         # kgf/cm² resistencia ultima del acero
+Es = 2.1e6       # kgf/cm² modulo de elasticidad del acero
+fc = 250         # kgf/cm² Resistencia del hormigón
+lw = 60          # cm (longitud del muro en análisis)
+N_imp = 120000     # Carga axial (compresión positiva)
+n_fibras =300   # fibras de concreto para integración
+
+#deformaciones acero
+eps_y = fy / Es       # deformación de fluencia del acero
+eps_sh = 0.01         # inicio del endurecimiento
+eps_su = 0.06         # deformación máxima del acero (fractura)
+
+#deformaciones hormigón
+eps_0 = 0.002         # deformación a f'c
+eps_cu = 0.003        # deformación última del hormigón
+
+# Geometría y acero
+xj_steel = np.array([5, 17.5, 30, 42.5, 55])    # posición barras
+n_1 = np.array([3,2,2,2,3])             # Cantidad de barras por línea de refuerzo
+diam_1 = np.array([22, 22, 22, 22,22])          # mm Diámetros de las barras por línea
+As = (np.pi / 4) * ((diam_1 / 10)**2) * n_1      # cm² Área de acero total por línea de refuerzo
+
+# Concreto: bloques y área total
+x_inicio = np.array([0.0]) #Inicio del bloque de concreto (eje horizontal)
+x_fin = np.array([60.0]) #Fin del bloque de concreto (eje horizontal) [cm]
+bj = np.array([30.0]) #Ancho del bloque de concreto [cm]
+largo = x_fin - x_inicio #Largo del bloque de concreto [cm]
+xj_conc = x_inicio + largo / 2  #Centroide de cada bloque de concreto [cm]
+Aj = largo * bj #Área de cada bloque de concreto [cm²]
+
+#Lista de diccionarios con la geometría de cada bloque PARA MUROS T
+bloques = [{
+    "x_inicio": x_inicio[i],
+    "x_fin": x_fin[i],
+    "xj [cm]": xj_conc[i],
+    "b [cm]": bj[i],
+    "largo [cm]": largo[i],
+    "Aj [cm²]": Aj[i]
+} for i in range(len(x_inicio))]
+
+# Centroide (xp)
+Ast = np.sum(As) #Área total de acero longitudinal
+fcAjxj = np.sum([b["Aj [cm²]"] * b["xj [cm]"] * 0.85 * fc for b in bloques]) #Momento de bloques de hormigon respecto a eje neutro
+Asfyxj = np.sum(As * xj_steel * fy) #Momento del acero respecto a eje neutro
+Ag = np.sum(Aj) #Área bruta
+denom = 0.85 * fc * Ag + Ast * fy #Denominador del cálculo del centroide combinado
+xp = (fcAjxj + Asfyxj) / denom #Centroide combinado acero + hormigon [cm]
+
+# === FUNCIONES DE MATERIALES ===
+
+# Modelo de acero con endurecimiento (basado en SAP2000)
+def sigma_acero(es, fy=fy, fu=fu, Es=Es, eps_sh=eps_sh, eps_su=eps_su):
+
+#calcula el esfuerzo en una fibra de acero en función de la deformación unitaria (e).
+#modelo multilineal basado en el S MODEL de SAP2000 informado en el section designer
+
+    #es: deformación unitaria por tracción en el acero (positiva en tracción)
+    # eps_y = deformación de fluencia [fy/Es]
+    # eps_sh = deformación al inicio del endurecimiento [0.01 - 0.015]
+    # eps_su = deformación última del acero (fractura) [0.05 - 0.12]
+
+    eps_y = fy / Es  # Deformación de fluencia elástica, se calcula dentro de la función en base a los valores entregados
+    abs_es = abs(es)
+
+    if abs_es <= eps_y: #si la deformación esta en el rango elástico
+        return Es * es  #elástico
+
+    elif abs_es <= eps_sh: #si esta en el rango plastico perfecto
+        return fy * np.sign(es)  # perfectamente plástico
+
+    elif abs_es <= eps_su: #ramo post fluencia de endurecimiento no lineal
+        ratio = (abs_es - eps_sh) / (eps_su - eps_sh)
+        return (fy + (fu - fy) * np.sqrt(ratio)) * np.sign(es)  #endurecimiento
+
+    else: #si la deformación supera la deformacion última permitida para el acero
+        return 0  #fractura
+
+# Modelo para hormigón (Kent y Park simplificado)
+def sigma_hormigon(ec, fc=fc, eps_0=eps_0, eps_cu=eps_cu):
+
+    # ec = deformación unitaria del hormigón (positiva en compresión)
+    # eps_0 = deformación en la que se alcanza fc [0.002]
+    # eps_cu = deformación última del hormigón [0.003]
+
+    if ec <= 0:
+        return 0 #tracción nula
+    elif ec <= eps_0: #tramo parabolico hasta el esfuerzo máximo
+        return fc * (2 * ec / eps_0 - (ec / eps_0)**2) #
+    elif ec <= eps_cu:
+        return fc #constante hasta la deformación ultima
+        #return fc * (1 - ((ec - eps_0) / (eps_cu - eps_0)))  # caída lineal
+
+    else:
+        return 0 #fractura
+
+# === INTEGRACIÓN DE FIBRAS ===
+#Fuerzas internas de tracción por hormigon
+
+def calcular_Cj(bloques, phi, c, xp, n_fibras, fc=fc, eps_cu=eps_cu):
+    dx = lw / n_fibras  #tamaño de cada fibra horizontal
+    Cj = []
+    Mj = []
+    for i in range(n_fibras):
+        xj = dx * (i + 0.5)
+        bloque = bloques[0]
+        Aj_fibra = bloque["b [cm]"] * dx
+        ec_i = -phi * (xj - c)
+        fc_i = sigma_hormigon(ec_i, fc, eps_0=eps_0, eps_cu=eps_cu)
+        C = Aj_fibra * fc_i
+        M = C * (xp - xj) #momento con respecto al eje neutro
+        Cj.append(C)
+        Mj.append(M)
+    return np.array(Cj), np.array(Mj)
+
+# === MODELO DE CORTE ===
+
+
+def modelo_corte(ec_list, fy, Es, As, xj_steel, bloques, xp, N_imp,
+                          eps_su=0.06, eps_cu=0.003, porcentaje_fibras=0.3,
+                          corte_momento=False, tolerancia_momento=0.05):
+    """
+    Versión mejorada del análisis momento–curvatura.
+
+    Detiene el análisis si:
+    - El 30% de las fibras de hormigón superan εcu
+    - TODAS las barras de acero superan εsu
+    - (opcional) el momento cae más del 5% tras el peak
+
+    También imprime el motivo de falla estructural.
+    """
+    resultados = []
+    M_max = 0
+
+    for ec in ec_list:
+        try:
+            c_min = 0.1
+            c_max = lw
+            mejor_phi = None
+            mejor_M = None
+            mejor_eps_s = None
+            min_error = float("inf")
+
+            for _ in range(200):
+                c = (c_min + c_max) / 2
+                phi = ec / c
+
+                Tj = np.array([Asj * sigma_acero(phi * (xj - c)) for xj, Asj in zip(xj_steel, As)])
+                Cj, _ = calcular_Cj(bloques, phi, c, xp, n_fibras)
+                equilibrio = np.sum(Cj) - np.sum(Tj)
+                error = abs(equilibrio - N_imp)
+
+                if error < min_error:
+                    dx = lw / n_fibras
+                    xj_fibra = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+                    Mj_T = -Tj * (xp - xj_steel)
+                    Mj_C = Cj * (xp - xj_fibra)
+                    mejor_M = np.sum(Mj_T) + np.sum(Mj_C)
+                    mejor_phi = phi
+                    mejor_eps_s = [phi * (xj - c) for xj in xj_steel]
+                    min_error = error
+
+                if error < 1e-3:
+                    break
+                if equilibrio < N_imp:
+                    c_min = c
+                else:
+                    c_max = c
+
+            # CORTE 1: TODAS las barras superan εsu
+            eps_s_falladas = [abs(eps) >= eps_su for eps in mejor_eps_s]
+            if all(eps_s_falladas):
+                print(f"Falla por fractura del acero en TODAS las barras en ec = {ec:.5f}")
+                break
+
+            # CORTE 2: Más del 30% de fibras superan εcu
+            dx = lw / n_fibras
+            xj_fibras = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+            eps_c_fibras = np.array([-mejor_phi * (xj - c) for xj in xj_fibras])
+            fibras_falladas = np.sum(eps_c_fibras >= eps_cu)
+            if fibras_falladas >= porcentaje_fibras * n_fibras:
+                print(f"Falla por daño del hormigón: {fibras_falladas}/{n_fibras} fibras superaron εcu en ec = {ec:.5f}")
+                break
+
+            # CORTE 3: caída de momento (opcional)
+            if corte_momento and mejor_M < (1 - tolerancia_momento) * M_max:
+                print(f"Corte por caída de momento en ec = {ec:.5f}")
+                break
+
+            M_max = max(M_max, mejor_M)
+
+            resultados.append(
+                (ec, mejor_phi, mejor_M, *mejor_eps_s)
+            )
+
+        except Exception as e:
+            print(f"Error numérico en ec = {ec:.5f}: {e}")
+            break
+
+    colnames = ["ec", "Curvatura_phi", "Momento_M"] + [f"eps_s_{i+1}" for i in range(len(xj_steel))]
+    return pd.DataFrame(resultados, columns=colnames)
+
+# === GRÁFICO ===
+ec_list = np.linspace(0.0001, 0.005, 300)
+
+
+# Llamada al modelo mejorado con todos los argumentos requeridos
+df = modelo_corte(
+    ec_list=ec_list,
+    fy=fy,
+    Es=Es,
+    As=As,
+    xj_steel=xj_steel,
+    bloques=bloques,
+    xp=xp,
+    N_imp=N_imp,
+    eps_su=eps_su,
+    eps_cu=eps_cu,
+    porcentaje_fibras=0.3,   # corte si falla 30% del hormigón
+    corte_momento=False)      # permite seguir después del peak
+
+# === LISTAS ORIGINALES (SAP) ===
+curvatura_fibras = np.array([
+    0, 2.85E-07, 7.14E-07, 1.28E-06, 2.00E-06, 2.85E-06, 3.85E-06, 5.00E-06,
+    6.28E-06, 7.71E-06, 9.28E-06, 1.10E-05, 1.28E-05, 1.48E-05, 1.70E-05,
+    1.93E-05, 2.17E-05, 2.43E-05, 2.70E-05, 2.98E-05, 3.28E-05, 3.60E-05,
+    3.92E-05, 4.27E-05, 4.62E-05, 5.00E-05, 5.38E-05, 5.78E-05, 6.19E-05,
+    6.62E-05, 7.06E-05, 7.52E-05, 7.99E-05, 8.48E-05, 8.98E-05, 9.49E-05,
+    0.0001002, 0.0001056, 0.0001112, 0.0001169, 0.0001227, 0.0001287,
+    0.0001349, 0.0001411, 0.0001476, 0.0001541, 0.0001608, 0.0001677,
+    0.0001747, 0.0001818
+])
+momento_fibras = np.array([
+    0.00E+00, 4.21E+04, 1.05E+05, 1.89E+05, 2.95E+05, 4.21E+05, 5.68E+05,
+    7.36E+05, 9.26E+05, 1.14E+06, 1.36E+06, 1.59E+06, 1.76E+06, 1.89E+06,
+    2.03E+06, 2.17E+06, 2.33E+06, 2.50E+06, 2.67E+06, 2.86E+06, 3.05E+06,
+    3.26E+06, 3.44E+06, 3.63E+06, 3.83E+06, 4.04E+06, 4.26E+06, 4.46E+06,
+    4.67E+06, 4.87E+06, 5.07E+06, 5.27E+06, 5.39E+06, 5.48E+06, 5.57E+06,
+    5.66E+06, 5.76E+06, 5.81E+06, 5.86E+06, 5.90E+06, 5.95E+06, 5.97E+06,
+    5.97E+06, 5.96E+06, 5.96E+06, 5.96E+06, 5.94E+06, 5.91E+06, 5.88E+06,
+    5.84E+06
+])
+
+curvatura_exacta = np.array([
+    0, 2.98E-07, 7.45E-07, 1.34E-06, 2.09E-06, 2.98E-06, 4.02E-06, 5.21E-06,
+    6.56E-06, 8.05E-06, 9.68E-06, 1.15E-05, 1.34E-05, 1.55E-05, 1.77E-05,
+    2.01E-05, 2.26E-05, 2.53E-05, 2.82E-05, 3.11E-05, 3.43E-05, 3.75E-05,
+    4.10E-05, 4.45E-05, 4.83E-05, 5.21E-05, 5.62E-05, 6.03E-05, 6.47E-05,
+    6.91E-05, 7.37E-05, 7.85E-05, 8.34E-05, 8.85E-05, 9.37E-05, 9.91E-05,
+    0.0001046, 0.0001102, 0.0001161, 0.000122, 0.0001281, 0.0001344,
+    0.0001408, 0.0001473, 0.000154, 0.0001609, 0.0001679, 0.0001751,
+    0.0001824, 0.0001898
+])
+momento_exacta = np.array([
+    0.00E+00, 4.82E+04, 1.20E+05, 2.17E+05, 3.37E+05, 4.82E+05, 6.50E+05,
+    8.43E+05, 1.06E+06, 1.29E+06, 1.50E+06, 1.69E+06, 1.88E+06, 2.05E+06,
+    2.23E+06, 2.40E+06, 2.58E+06, 2.75E+06, 2.92E+06, 3.10E+06, 3.28E+06,
+    3.46E+06, 3.65E+06, 3.84E+06, 4.03E+06, 4.23E+06, 4.43E+06, 4.63E+06,
+    4.83E+06, 5.04E+06, 5.24E+06, 5.36E+06, 5.44E+06, 5.53E+06, 5.61E+06,
+    5.70E+06, 5.76E+06, 5.80E+06, 5.84E+06, 5.87E+06, 5.87E+06, 5.87E+06,
+    5.87E+06, 5.87E+06, 5.86E+06, 5.85E+06, 5.83E+06, 5.77E+06, 5.67E+06,
+    5.51E+06
+])
+
+# === GRAFICAR CURVAS CONVERTIDAS A ton·m y 1/m ===
+plt.figure(figsize=(12, 7))
+
+# Conversión: kgf·cm → ton·m = ×1e-5 ; curvatura 1/cm → 1/m = ×100
+plt.plot(np.array(curvatura_fibras)*100, np.array(momento_fibras)*1e-5,
+         label="SAP - Modelo de Fibras", color="red", marker='o', markersize=3, linestyle='-')
+
+plt.plot(np.array(curvatura_exacta)*100, np.array(momento_exacta)*1e-5,
+         label="SAP - Integración Exacta", color="green", marker='x', markersize=4, linestyle='--')
+
+plt.plot(df["Curvatura_phi"]*100, df["Momento_M"]*1e-5,
+         label="Python Calculado", color="blue", linewidth=2.5, linestyle=':')
+
+plt.xlabel("Curvatura φ [1/m]")
+plt.ylabel("Momento M [ton·m]")
+plt.title("Comparación de Curvas M–φ Convertidas (ton·m y 1/m)")
+plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+
+plt.text(0.6, 0.15, f"Carga axial: {N_imp/1000:.0f} toneladas",
+         fontsize=10, color='gray', transform=plt.gca().transAxes)
+
+plt.legend()
+plt.tight_layout()
+plt.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+plt.show()
