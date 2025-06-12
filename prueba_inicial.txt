@@ -1,0 +1,120 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# -----------------------------
+# PARÁMETROS Y DATOS DE ENTRADA
+# -----------------------------
+
+# Materiales
+fy = 4200            # kg/cm²
+Es = 2.1e6           # kg/cm²
+N_imp = -150       # toneladas
+
+# Geometría del acero
+xj_steel = np.array([4.9, 20.0, 35.1, 60.1, 80.1, 100.1, 120.1, 140.1,
+                     160.1, 180.1, 200.1, 220.1, 240.1, 260.1, 274.9, 285.0, 295.1])  # cm
+As = (np.pi / 4) * ((diam_1 / 10)**2) * n_1  # cm²
+
+
+# Geometría del hormigón
+xj_conc = np.array([40.0, 260.0, 300.0])  # cm
+fcj = np.array([340.0, 140.25, 54.0])     # kg/cm²
+Aj = np.array([1600.0, 600.0, 400.0])     # cm²
+
+# Lista de deformaciones del hormigón (εc)
+ec_list = np.linspace(0.0001, 0.0080, 16)
+
+def esfuerzo_acero(kd, ec):
+    Tj = []
+    for x, A in zip(xj_steel, As):
+        εs = (x - kd) * ec / kd
+        fs = Es * εs
+        fs = max(min(fs, fy), -fy)
+        T = fs * A / 1000  # kg → T
+        Tj.append(T)
+    return sum(Tj)
+
+def esfuerzo_hormigon(kd):
+    Cj = []
+    for x, A, fc in zip(xj_conc, Aj, fcj):
+        if x < kd:
+            Cj.append(0.85 * fc * A / 1000)  # kg → T
+        else:
+            Cj.append(0)
+    return sum(Cj)
+
+def equilibrio(kd, ec):
+    return esfuerzo_acero(kd, ec) - esfuerzo_hormigon(kd) - N_imp
+
+def goal_seek_biseccion(f, a, b, tol=1e-4, max_iter=100):
+    for _ in range(max_iter):
+        c = (a + b) / 2
+        fc = f(c)
+        if abs(fc) < tol:
+            return c
+        if f(a) * fc < 0:
+            b = c
+        else:
+            a = c
+    raise ValueError("No se encontró raíz")
+
+def calcular_momento(kd, ec):
+    M_T = 0
+    for x, A in zip(xj_steel, As):
+        εs = (x - kd) * ec / kd
+        fs = Es * εs
+        fs = max(min(fs, fy), -fy)
+        T = fs * A / 1000  # T
+        M_T += T * x / 100  # T·m
+
+    M_C = 0
+    for x, A, fc in zip(xj_conc, Aj, fcj):
+        if x < kd:
+            C = 0.85 * fc * A / 1000  # T
+            M_C += C * x / 100  # T·m
+
+    return M_T + M_C
+
+def resolver_MC(ec):
+    try:
+        kd = goal_seek_biseccion(lambda kd: equilibrio(kd, ec), a=1, b=300)
+        phi = ec / kd
+        ε_y = (xj_steel[-1] - kd) * ec / kd  # deformación en la barra más lejana
+        Nf = esfuerzo_acero(kd, ec) - esfuerzo_hormigon(kd)
+        M = calcular_momento(kd, ec)
+        return [phi, ε_y, Nf, M]
+    except ValueError:
+        return [None, None, None, None]
+
+
+# -----------------------------
+# BUCLE DE CÁLCULO
+# -----------------------------
+
+resultados = []
+for ec in ec_list:
+    resultados.append(resolver_MC(ec))
+
+# Tabla de resultados
+df_resultados = pd.DataFrame(resultados, columns=["Curvatura φ", "ε_s", "N_f", "Momento M"])
+display(df_resultados)
+
+# -----------------------------
+# GRÁFICO MOMENTO vs CURVATURA
+# -----------------------------
+
+# Filtrar valores válidos
+df_val = df_resultados.dropna()
+phi = df_val["Curvatura φ"]
+M = df_val["Momento M"]
+
+# Graficar
+plt.figure(figsize=(8, 6))
+plt.plot(phi, M, marker='o', linewidth=2)
+plt.xlabel("Curvatura φ [1/cm]")
+plt.ylabel("Momento M [T·m]")
+plt.title("Diagrama Momento–Curvatura")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
