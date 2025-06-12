@@ -1,0 +1,138 @@
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# === PARÁMETROS MATERIALES Y GEOMETRÍA ===
+fy = 4200        # kgf/cm² fluencia del acero
+fu = 6300        # kgf/cm² resistencia última del acero
+Es = 2.1e6       # kgf/cm² módulo de elasticidad del acero
+fc = 250         # kgf/cm² resistencia del hormigón
+lw = 60          # cm (longitud del muro)
+N_imp = 120000   # Carga axial en kgf (positiva = compresión)
+n_fibras = 300   # número de fibras de hormigón
+
+eps_y = fy / Es
+eps_sh = 0.01
+eps_su = 0.06
+eps_0 = 0.002
+eps_cu = 0.003
+
+# === GEOMETRÍA DE ACERO ===
+xj_steel = np.array([5, 17.5, 30, 42.5, 55])
+n_1 = np.array([3, 2, 2, 2, 3])
+diam_1 = np.array([22, 22, 22, 22, 22])
+As = (np.pi / 4) * ((diam_1 / 10)**2) * n_1  # cm²
+
+# === GEOMETRÍA DEL BLOQUE DE HORMIGÓN ===
+x_inicio = np.array([0.0])
+x_fin = np.array([60.0])
+bj = np.array([60.0])
+largo = x_fin - x_inicio
+xj_conc = x_inicio + largo / 2
+Aj = largo * bj
+bloques = [{"x_inicio": x_inicio[i], "x_fin": x_fin[i], "xj [cm]": xj_conc[i], "b [cm]": bj[i], "largo [cm]": largo[i], "Aj [cm²]": Aj[i]} for i in range(len(x_inicio))]
+
+Ast = np.sum(As)
+fcAjxj = np.sum([b["Aj [cm²]"] * b["xj [cm]"] * 0.85 * fc for b in bloques])
+Asfyxj = np.sum(As * xj_steel * fy)
+Ag = np.sum(Aj)
+denom = 0.85 * fc * Ag + Ast * fy
+xp = (fcAjxj + Asfyxj) / denom  # Centroide total
+
+# === FUNCIONES DE MATERIAL ===
+def sigma_acero(es, fy=fy, fu=fu, Es=Es, eps_sh=eps_sh, eps_su=eps_su):
+    eps_y = fy / Es
+    abs_es = abs(es)
+    if abs_es <= eps_y:
+        σ = Es * abs_es
+    elif abs_es <= eps_sh:
+        σ = fy
+    elif abs_es <= eps_su:
+        σ = fy + (fu - fy) * (abs_es - eps_sh) / (eps_su - eps_sh)
+    else:
+        σ = 0
+    return σ * np.sign(es)
+
+def sigma_hormigon(ec, fc, eps_0=eps_0, eps_cu=eps_cu):
+    if ec >= 0:
+        return 0
+    if ec >= -eps_0:
+        return fc * (1 - (1 - ec / -eps_0)**2)
+    elif ec > -eps_cu:
+        return fc * (1 - ((-ec - eps_0) / (eps_cu - eps_0)))
+    else:
+        return 0
+
+def calcular_Cj(bloques, phi, c, xp, n_fibras, fc=fc, eps_cu=eps_cu):
+    dx = lw / n_fibras
+    Cj = []
+    eps_fibra = []
+    for i in range(n_fibras):
+        xj = dx * (i + 0.5)
+        bloque = bloques[0]
+        Aj_fibra = bloque["b [cm]"] * dx
+        ec_i = phi * (xj - c)
+        fc_i = sigma_hormigon(ec_i, fc, eps_0=eps_0, eps_cu=eps_cu)
+        C = Aj_fibra * fc_i
+        Cj.append(C)
+        eps_fibra.append(ec_i)
+    return np.array(Cj), eps_fibra
+
+# === FUNCIÓN PRINCIPAL ===
+def modelo_curvatura_directa(phi_list, fy, Es, As, xj_steel, bloques, xp, N_imp,
+                              h, n_fibras, eps_su, eps_cu, tol=1e-2, max_iteraciones=100):
+    resultados = []
+    for phi in phi_list:
+        c_min = 5
+        c_max = 55
+        convergido = False
+        for _ in range(max_iteraciones):
+            c = (c_min + c_max) / 2
+            eps_s = [phi * (xj - c) for xj in xj_steel]
+            Tj = np.array([Asj * sigma_acero(eps) for eps, Asj in zip(eps_s, As)])
+            Cj, eps_fibra = calcular_Cj(bloques, phi, c, xp, n_fibras)
+            if np.mean(np.array(eps_fibra) < -eps_cu) >= 0.3:
+                break
+            if all(abs(eps) >= eps_su for eps in eps_s):
+                break
+            equilibrio = np.sum(Cj) - np.sum(Tj)
+            error = abs(equilibrio - N_imp)
+            if error < tol:
+                convergido = True
+                break
+            if equilibrio < N_imp:
+                c_min = c
+            else:
+                c_max = c
+        if convergido:
+            dx = h / n_fibras
+            xj_fibra = np.array([dx * (i + 0.5) for i in range(n_fibras)])
+            M_T = Tj * (xj_steel - xp)
+            M_C = Cj * (xj_fibra - xp)
+            M_total = np.sum(M_T) + np.sum(M_C)
+            if M_total >= 0:
+                resultados.append((phi, M_total, c, *eps_s))
+    columns = ["Curvatura_phi", "Momento_M", "c"] + [f"eps_s_{i+1}" for i in range(len(xj_steel))]
+    return pd.DataFrame(resultados, columns=columns)
+
+# === EJECUCIÓN Y GRÁFICA ===
+phi_list = np.linspace(0.0001, 0.02, 500)
+df_phi_directa = modelo_curvatura_directa(
+    phi_list, fy, Es, As, xj_steel, bloques, xp, N_imp,
+    lw, n_fibras, eps_su, eps_cu, tol=5e-2
+)
+
+curvatura_plot = df_phi_directa["Curvatura_phi"].to_numpy() * 100  # 1/cm a 1/m
+momento_plot = df_phi_directa["Momento_M"].to_numpy() / 1e5        # kgf·cm a ton·m
+
+plt.figure(figsize=(8, 6))
+plt.plot(curvatura_plot, momento_plot,
+         label='Modelo φ directo', color='purple', linewidth=2.5)
+plt.xlabel("Curvatura φ [1/m]")
+plt.ylabel("Momento M [ton·m]")
+plt.title("Curva M–φ iterando sobre φ")
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.legend()
+plt.tight_layout()
+plt.show()
